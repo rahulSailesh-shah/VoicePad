@@ -243,6 +243,9 @@ func (s *LiveKitSession) callbacksForRoom() *lksdk.RoomCallback {
 	return &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if publication.Kind() != lksdk.TrackKindAudio {
+					return
+				}
 				if pcmRemoteTrack != nil {
 					return
 				}
@@ -344,6 +347,11 @@ func (s *LiveKitSession) handleTextStreamQueue() {
 }
 
 func (s *LiveKitSession) handleSubscribe(track *webrtc.TrackRemote) (*lkmedia.PCMRemoteTrack, error) {
+	// Only process audio tracks
+	if track.Kind() != webrtc.RTPCodecTypeAudio {
+		return nil, fmt.Errorf("expected audio track, got %v", track.Kind())
+	}
+
 	if track.Codec().MimeType != webrtc.MimeTypeOpus {
 		logger.Warnw("Received non-opus track", nil, "track", track.Codec().MimeType)
 	}

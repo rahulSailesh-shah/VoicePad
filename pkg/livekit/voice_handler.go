@@ -53,19 +53,19 @@ func NewVoiceHandler(cfg VoiceHandlerConfig) (*VoiceHandler, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	session, err := cfg.SpeechClient.NewTranscribeSession(ctx, cfg.SessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create speech session: %w", err)
-	}
+	// session, err := cfg.SpeechClient.NewTranscribeSession(ctx, cfg.SessionID)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to create speech session: %w", err)
+	// }
 	return &VoiceHandler{
 		sessionID:     cfg.SessionID,
 		boardID:       cfg.BoardID,
 		userID:        cfg.UserID,
 		speechClient:  cfg.SpeechClient,
-		session:       session,
+		// session:       session,
 		ctx:           ctx,
 		cancel:        cancel,
-		isMuted:       false, // Start muted until OnUnmute is called
+		isMuted:       true, // Start muted until OnUnmute is called
 		onTranscribe:  cfg.OnTranscribe,
 		onLLMResponse: cfg.OnLLMResponse,
 		getBoardState: cfg.GetBoardState,
