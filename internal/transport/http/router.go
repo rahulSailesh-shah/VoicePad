@@ -36,9 +36,8 @@ func RegisterRoutes(r *gin.Engine, authKeys jwk.Set, app *app.App) {
 	// r.Any("/api/inngest", app.Inngest.Handler())
 
 	userHandler := handler.NewUserHandler(app.Service.UserService)
-	protected.GET("/api/users/:id", userHandler.GetUserByID)
+	protected.GET("/users/:id", userHandler.GetUserByID)
 
-	
-
-	
+	boardHandler := handler.NewBoardHandler(app.Service.BoardService)
+	protected.POST("/boards", boardHandler.CreateBoard)
 }

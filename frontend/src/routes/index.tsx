@@ -4,7 +4,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
     await requireAuth();
-    throw redirect({ to: "/users" });
+    throw redirect({ to: "/boards" });
   },
   component: RouteComponent,
 });

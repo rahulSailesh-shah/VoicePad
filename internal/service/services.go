@@ -10,12 +10,13 @@ import (
 
 type Service struct {
 	UserService UserService
-
+	BoardService BoardService
 }
 
 func NewService(db *pgxpool.Pool, queries *repo.Queries, inngest *inngest.Inngest, cfg *config.AppConfig) *Service {
 	return &Service{
 		UserService: NewUserService(db, queries),
+		BoardService: NewBoardService(db, queries, cfg),
 	}
 		
 }

@@ -49,18 +49,16 @@ type LiveKitSession struct {
 
 func NewLiveKitSession(
 	userDetails *repo.User,
-	lkConfig *config.LiveKitConfig,
-	geminiConfig *config.GeminiConfig,
-	awsConfig *config.AWSConfig,
+	config *config.AppConfig,
 	callbacks SessionCallbacks,
 ) *LiveKitSession {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &LiveKitSession{
 		userDetails:     userDetails,
-		lkConfig:        lkConfig,
-		geminiConfig:    geminiConfig,
-		awsConfig:       awsConfig,
+		lkConfig:        &config.LiveKit,
+		geminiConfig:    &config.Gemini,
+		awsConfig:       &config.AWS,
 		ctx:             ctx,
 		cancel:          cancel,
 		callbacks:       callbacks,
@@ -104,7 +102,7 @@ func (s *LiveKitSession) GenerateUserToken() (string, error) {
 	// !FIXME
 	grant := &auth.VideoGrant{
 		RoomJoin: true,
-		Room:     "",
+		Room:     "board",
 	}
 	at.SetVideoGrant(grant).
 		SetIdentity(s.userDetails.Name).
@@ -129,7 +127,7 @@ func (s *LiveKitSession) connectBot() error {
 	}
 
 	go s.handlePublish(audioWriterChan)
-	go s.handleTextStreamQueue()
+	// go s.handleTextStreamQueue()
 
 	// egressInfo, err := s.startRecording()
 	// if err != nil {
@@ -145,8 +143,8 @@ func (s *LiveKitSession) connectToRoom() error {
 	room, err := lksdk.ConnectToRoom(s.lkConfig.Host, lksdk.ConnectInfo{
 		APIKey:              s.lkConfig.APIKey,
 		APISecret:           s.lkConfig.APISecret,
-		RoomName:            "",
-		ParticipantIdentity: "",
+		RoomName:            "board",
+		ParticipantIdentity: "bot",
 	}, s.callbacksForRoom())
 	if err != nil {
 		return err
@@ -230,7 +228,7 @@ func (s *LiveKitSession) handleTextStreamQueue() {
 				continue
 			}
 			s.room.LocalParticipant.SendText(string(marshalData), lksdk.StreamTextOptions{
-				Topic: "room",
+				Topic: "board",
 			})
 		case <-s.ctx.Done():
 			return
