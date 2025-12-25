@@ -3,10 +3,9 @@ import { useEffect, useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import { LiveKitRoom, useRoomContext } from "@livekit/components-react";
 import { RoomEvent } from "livekit-client";
-import { Excalidraw } from "@excalidraw/excalidraw";
 import { DraggableControlsLayout } from "../components/draggable-controls-layout";
 import "@livekit/components-styles";
-import "@excalidraw/excalidraw/index.css";
+import { Whiteboard, type WhiteboardStateChange } from "./whiteboard";
 
 const SERVER_URL = "wss://conversense-z0ptqzuw.livekit.cloud";
 
@@ -65,8 +64,14 @@ export const BoardRoomView = ({ boardId }: BoardRoomViewProps) => {
     );
   }
 
+  const handleStateChange = (state: WhiteboardStateChange) => {
+    console.log("state", state);
+  };
+
   return (
     <div className="h-screen w-screen relative bg-white">
+      <Whiteboard boardId={boardId} onStateChange={handleStateChange} />
+      {/* 
       <LiveKitRoom
         className="h-full w-full relative"
         serverUrl={SERVER_URL}
@@ -87,11 +92,11 @@ export const BoardRoomView = ({ boardId }: BoardRoomViewProps) => {
             className="absolute inset-0"
             style={{ width: "100%", height: "100%" }}
           >
-            <Excalidraw />
+            <Whiteboard boardId={boardId} />
           </div>
           <DraggableControlsLayout meetingId={boardId} />
         </div>
-      </LiveKitRoom>
+      </LiveKitRoom> */}
     </div>
   );
 };

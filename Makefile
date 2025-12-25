@@ -66,7 +66,7 @@ run-inngest:
 
 run-auth:
 	@echo "Starting auth service..."
-	@cd packages/auth && bun run dev
+	@cd services/auth && bun run dev
 
 make run-studio:
 	@echo "Starting studio..."
