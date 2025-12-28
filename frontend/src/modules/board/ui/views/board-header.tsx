@@ -124,9 +124,12 @@ const BoardHeader = ({
   boardName: string;
 }) => {
   return (
-    <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 bg-background sticky top-0 z-50">
+    <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4 bg-background sticky top-0 z-50 font-sans">
       <div className="flex flex-row items-center justify-between gap-x-4 w-full">
-        <BoardBreadcrumb boardId={boardId} boardName={boardName} />
+        <div className="flex items-center gap-2">
+          <img src="/logo.svg" alt="Draw Logo" className="h-8 w-8" />
+          <BoardBreadcrumb boardId={boardId} boardName={boardName} />
+        </div>
       </div>
     </div>
   );

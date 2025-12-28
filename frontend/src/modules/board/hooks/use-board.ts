@@ -4,7 +4,13 @@ import {
   useQuery,
   keepPreviousData,
 } from "@tanstack/react-query";
-import { createBoard, getBoard, getBoards, updateBoard } from "../api";
+import {
+  createBoard,
+  deleteBoard,
+  getBoard,
+  getBoards,
+  updateBoard,
+} from "../api";
 import type { UpdateBoardRequest } from "../types";
 
 // Query hooks
@@ -38,17 +44,27 @@ export const useMutationCreateBoard = () => {
 };
 
 export const useMutationUpdateBoard = () => {
-  const queryClient = useQueryClient();
+  // const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, req }: { id: string; req: UpdateBoardRequest }) =>
       updateBoard(id, req),
     onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ["board", variables.id],
-      });
+      // queryClient.invalidateQueries({
+      //   queryKey: ["board", variables.id],
+      // });
     },
     onError: (error) => {
       console.error(error);
+    },
+  });
+};
+
+export const useMutationDeleteBoard = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteBoard(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["boards"] });
     },
   });
 };

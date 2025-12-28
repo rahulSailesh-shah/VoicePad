@@ -2,7 +2,6 @@ package livekit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -15,7 +14,7 @@ import (
 
 type LLMResponseCallback func(response *llm.LLMResponse, err error)
 
-type GetBoardStateFunc func(boardID string) (json.RawMessage, error)
+type GetBoardStateFunc func() (string, error)
 
 type VoiceHandler struct {
 	sessionID             string
@@ -174,7 +173,19 @@ func (h *VoiceHandler) Close() error {
 }
 
 func (h *VoiceHandler) handleLLMResponse(transcription string) {
-	response, err := h.llmClient.GenerateResponse(context.Background(), transcription)
+	var boardStateJSON string = "[]"
+	if h.getBoardState != nil && h.boardID != "" {
+		boardState, err := h.getBoardState()
+		if err != nil {
+			fmt.Println("Failed to get board state for LLM", err, "boardID", h.boardID)
+		} else {
+			boardStateJSON = boardState
+		}
+	}
+
+	fmt.Println("Board state", boardStateJSON)
+
+	response, err := h.llmClient.GenerateResponse(context.Background(), transcription, boardStateJSON)
 	if err != nil {
 		if h.onLLMResponse != nil {
 			h.onLLMResponse(nil, err)
@@ -182,10 +193,7 @@ func (h *VoiceHandler) handleLLMResponse(transcription string) {
 		return
 	}
 
-	fmt.Println("LLM response", response)
-
 	if h.onLLMResponse != nil {
-		fmt.Println("Calling on LLM response callback", response)
 		h.onLLMResponse(response, nil)
 	}
 }

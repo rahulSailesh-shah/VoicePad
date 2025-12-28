@@ -37,6 +37,11 @@ type UpdateBoardRequest struct {
 	Elements json.RawMessage `json:"elements,omitempty"`
 }
 
+type DeleteBoardRequest struct {
+	BoardID string `json:"-"`
+	UserID string `json:"-"`
+}
+
 // Response
 type CreateBoardResponse struct {
 	BoardID uuid.UUID `json:"boardId"`

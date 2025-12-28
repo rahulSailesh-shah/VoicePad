@@ -9,30 +9,16 @@ import {
   useRoomContext,
 } from "@livekit/components-react";
 
-export interface DraggableControlsLayoutProps extends React.HTMLAttributes<HTMLDivElement> {}
-
-// Sentiment analysis result
-export interface SentimentData {
-  text: string;
-  sentiment: string;
-  score: number;
-  emotions: Record<string, number>;
-  timestamp: string;
-  source: string;
+export interface DraggableControlsLayoutProps extends React.HTMLAttributes<HTMLDivElement> {
+  onCanvasUpdate: (response: any) => void;
 }
 
-// Transcript message
-export interface TranscriptData {
-  role: string; // "user" or "ai"
-  name: string; // Speaker's name
-  content: string; // Transcript text
-  timestamp: string; // When the segment was captured
-}
-
-// Wrapper for all stream messages
 export interface StreamTextData {
-  type: "sentiment" | "transcript";
-  data: SentimentData | TranscriptData;
+  type: "canvas_update";
+  data: {
+    response: string;
+    timestamp: string;
+  };
 }
 
 // Custom hook for dragging functionality
@@ -122,7 +108,7 @@ const useDraggable = (initialPosition = { x: 0, y: 0 }) => {
       // Constrain to viewport bounds
       const maxX = window.innerWidth - rect.width;
       const maxY = window.innerHeight - rect.height;
-      
+
       // Minimum top position to prevent toolbar from going above viewport
       const minY = 0;
 
@@ -146,7 +132,7 @@ const useDraggable = (initialPosition = { x: 0, y: 0 }) => {
       // Constrain to viewport bounds
       const maxX = window.innerWidth - rect.width;
       const maxY = window.innerHeight - rect.height;
-      
+
       // Minimum top position to prevent toolbar from going above viewport
       const minY = 0;
 
@@ -184,17 +170,11 @@ const useDraggable = (initialPosition = { x: 0, y: 0 }) => {
 };
 
 export const DraggableControlsLayout = ({
+  onCanvasUpdate,
   ...props
 }: DraggableControlsLayoutProps) => {
   const room = useRoomContext();
   const layoutContext = useCreateLayoutContext();
-  const [_transcripts, setTranscripts] = React.useState<TranscriptData[]>([]);
-  const [_currentSentiment, setCurrentSentiment] = React.useState<{
-    sentiment: string;
-    score: number;
-    maxEmotion: string;
-    maxEmotionScore: number;
-  } | null>(null);
 
   const {
     dragRef,
@@ -210,18 +190,18 @@ export const DraggableControlsLayout = ({
     if (!dragRef.current) return;
 
     const element = dragRef.current;
-    
+
     const ensureFixedPosition = () => {
       // Force fixed positioning relative to viewport, not affected by parent transforms
       const computedStyle = window.getComputedStyle(element);
-      if (computedStyle.position !== 'fixed') {
-        element.style.position = 'fixed';
+      if (computedStyle.position !== "fixed") {
+        element.style.position = "fixed";
       }
-      
+
       // Ensure toolbar doesn't go above viewport
       const rect = element.getBoundingClientRect();
       if (rect.top < 0) {
-        element.style.top = '0px';
+        element.style.top = "0px";
       }
     };
 
@@ -235,85 +215,48 @@ export const DraggableControlsLayout = ({
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['style', 'class'],
+      attributeFilter: ["style", "class"],
     });
 
     // Also check on resize and scroll
-    window.addEventListener('resize', ensureFixedPosition);
-    window.addEventListener('scroll', ensureFixedPosition, true);
+    window.addEventListener("resize", ensureFixedPosition);
+    window.addEventListener("scroll", ensureFixedPosition, true);
 
     // Initial check
     ensureFixedPosition();
 
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', ensureFixedPosition);
-      window.removeEventListener('scroll', ensureFixedPosition, true);
+      window.removeEventListener("resize", ensureFixedPosition);
+      window.removeEventListener("scroll", ensureFixedPosition, true);
     };
   }, [dragRef]);
 
   React.useEffect(() => {
     try {
       room.registerTextStreamHandler(
-        "room",
+        "board",
         async (reader, participantInfo) => {
           const message = await reader.readAll();
           const streamData: StreamTextData = JSON.parse(message);
           console.log("Received stream data:", streamData);
-
-          if (streamData.type === "sentiment") {
-            const sentimentData = streamData.data as SentimentData;
-            console.log(
-              `Sentiment from ${participantInfo.identity}:`,
-              sentimentData
-            );
-
-            // Find the maximum emotion
-            const emotions = sentimentData.emotions;
-            let maxEmotion = "";
-            let maxEmotionScore = 0;
-
-            for (const [emotion, score] of Object.entries(emotions)) {
-              if (score > maxEmotionScore) {
-                maxEmotionScore = score;
-                maxEmotion = emotion;
-              }
+          const canvasUpdateData = streamData.data as {
+            response: string;
+            timestamp: string;
+          };
+          console.log(
+            `Canvas update from ${participantInfo.identity}:`,
+            canvasUpdateData
+          );
+          const { response } = canvasUpdateData;
+          try {
+            const parsedResponse = JSON.parse(response);
+            if (onCanvasUpdate) {
+              onCanvasUpdate(parsedResponse);
             }
-
-            // Update sentiment state
-            setCurrentSentiment({
-              sentiment: sentimentData.sentiment,
-              score: sentimentData.score,
-              maxEmotion,
-              maxEmotionScore,
-            });
-          } else if (streamData.type === "transcript") {
-            const transcriptData = streamData.data as TranscriptData;
-            console.log(
-              `Transcript from ${participantInfo.identity}:`,
-              transcriptData
-            );
-
-            // YouTube-style live transcript: Update the current speaker's message in real-time
-            setTranscripts((prev) => {
-              // Check if the last transcript is from the same speaker
-              const lastTranscript = prev[prev.length - 1];
-
-              if (
-                lastTranscript &&
-                lastTranscript.role === transcriptData.role &&
-                lastTranscript.name === transcriptData.name &&
-                lastTranscript.timestamp === transcriptData.timestamp
-              ) {
-                // Same speaker, same turn - update the content in place
-                const updated = [...prev];
-                updated[updated.length - 1] = transcriptData;
-                return updated;
-              } else {
-                // New speaker or new turn - add as new entry
-                return [...prev, transcriptData];
-              }
-            });
+          } catch (error) {
+            console.error("Error parsing canvas update response:", error);
+            return;
           }
         }
       );
@@ -323,18 +266,18 @@ export const DraggableControlsLayout = ({
 
     return () => {
       try {
-        room.unregisterTextStreamHandler("room");
+        room.unregisterTextStreamHandler("board");
       } catch (error) {
         console.warn("Error unregistering text stream handler:", error);
       }
     };
-  }, []);
+  }, [room, onCanvasUpdate]);
 
   return (
     <>
       <div
         ref={dragRef}
-        className="draggable-controls-container fixed z-[9999] bg-white rounded-lg shadow-lg px-3 py-2 overflow-visible border border-gray-200/50 flex flex-row items-center gap-2 select-none"
+        className="draggable-controls-container fixed z-9999 bg-white rounded-lg shadow-lg px-3 py-2 overflow-visible border border-gray-200/50 flex flex-row items-center gap-2 select-none"
         style={{
           top: `${Math.max(0, position.y)}px`,
           left: `${position.x}px`,

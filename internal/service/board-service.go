@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"draw/internal/db/repo"
@@ -18,6 +19,7 @@ type BoardService interface {
 	GetBoard(ctx context.Context, req dto.GetBoardRequest) (*dto.GetBoardResponse, error)
 	GetBoardsByUserID(ctx context.Context, req dto.GetBoardsByUserIDRequest) (*dto.GetBoardsByUserIDResponse, error)
 	UpdateBoard(ctx context.Context, req dto.UpdateBoardRequest) (*dto.GetBoardResponse, error)
+	DeleteBoard(ctx context.Context, req dto.DeleteBoardRequest) error
 }
 
 type boardService struct {
@@ -73,7 +75,18 @@ func (s *boardService) GetBoard(ctx context.Context, req dto.GetBoardRequest) (*
 		&userDetails,
 		board.ID.String(),
 		s.config,
-		livekit.SessionCallbacks{},
+		livekit.SessionCallbacks{
+			GetBoardState: func(boardID string, userID string) (json.RawMessage, error) {
+				board, err := s.queries.GetBoardByID(context.Background(), repo.GetBoardByIDParams{
+					ID: uuid.MustParse(boardID),
+					OwnerID: userID,
+				})
+				if err != nil || board.Elements == nil {
+					return nil, fmt.Errorf("failed to get board: %w", err)
+				}
+				return board.Elements, nil
+			},
+		},
 	)
 
 	if err := session.Start(); err != nil {
@@ -136,6 +149,17 @@ func (s *boardService) UpdateBoard(ctx context.Context, req dto.UpdateBoardReque
 		Board: toBoardResponse(board),
 	}, nil
 }
+
+func (s *boardService) DeleteBoard(ctx context.Context, req dto.DeleteBoardRequest) error {
+	err := s.queries.DeleteBoard(ctx, repo.DeleteBoardParams{
+		ID: uuid.MustParse(req.BoardID),
+		OwnerID: req.UserID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete board: %w", err)
+	}
+	return nil
+}	
 
 func toBoardResponse(board repo.Board) dto.Board {
 	return dto.Board{

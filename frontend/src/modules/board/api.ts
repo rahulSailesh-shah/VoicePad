@@ -50,3 +50,13 @@ export const updateBoard = async (id: string, req: UpdateBoardRequest) => {
   }
   return data;
 };
+
+export const deleteBoard = async (id: string) => {
+  const { data, error, status } = await apiClient.delete(
+    `/boards/${id}` as string
+  );
+  if (error) {
+    handleApiError(error, status);
+  }
+  return data;
+};

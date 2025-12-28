@@ -1,4 +1,10 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+} from "react";
 import { Excalidraw } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 import { convertToExcalidrawElements } from "@excalidraw/excalidraw";
@@ -17,6 +23,8 @@ export interface WhiteboardStateChange {
 export interface WhiteboardProps {
   board: Board;
   onStateChange?: (state: WhiteboardStateChange) => void;
+  llmResponse?: any;
+  onLlmResponseProcessed?: () => void;
 }
 
 type ExcalidrawOnChange = Parameters<
@@ -31,101 +39,33 @@ export function convertFromExcalidrawElements(
   elements: readonly ExcalidrawElement[]
 ): Record<string, any>[] {
   const activeElements = elements.filter((el) => !el.isDeleted);
-
-  return activeElements.map((element) => {
-    const baseCommand: Record<string, any> = {
-      type: element.type,
-      id: element.id,
-      x: element.x,
-      y: element.y,
-      width: element.width,
-      height: element.height,
-    };
-
-    if (element.angle !== undefined && element.angle !== 0) {
-      baseCommand.angle = element.angle;
-    }
-    if (element.strokeColor) {
-      baseCommand.strokeColor = element.strokeColor;
-    }
-    if (element.backgroundColor && element.backgroundColor !== "transparent") {
-      baseCommand.backgroundColor = element.backgroundColor;
-    }
-    if (element.fillStyle) {
-      baseCommand.fillStyle = element.fillStyle;
-    }
-    if (element.strokeWidth !== undefined) {
-      baseCommand.strokeWidth = element.strokeWidth;
-    }
-    if (element.strokeStyle) {
-      baseCommand.strokeStyle = element.strokeStyle;
-    }
-    if (element.roughness !== undefined) {
-      baseCommand.roughness = element.roughness;
-    }
-    if (element.opacity !== undefined && element.opacity !== 100) {
-      baseCommand.opacity = element.opacity;
-    }
-    if (element.roundness !== null && element.roundness !== undefined) {
-      baseCommand.roundness = element.roundness;
-    }
-    if (element.locked !== undefined) {
-      baseCommand.locked = element.locked;
-    }
-    if (element.link) {
-      baseCommand.link = element.link;
-    }
-
-    if (element.type === "arrow") {
-      // Convert startBinding/endBinding to start/end format
-      if ((element as any).startBinding?.elementId) {
-        baseCommand.start = {
-          id: (element as any).startBinding.elementId,
-        };
-      }
-      if ((element as any).endBinding?.elementId) {
-        baseCommand.end = {
-          id: (element as any).endBinding.elementId,
-        };
-      }
-
-      // Preserve label if it exists
-      if ((element as any).label?.text) {
-        baseCommand.label = {
-          text: (element as any).label.text,
-        };
-        if ((element as any).label.strokeColor) {
-          baseCommand.label.strokeColor = (element as any).label.strokeColor;
-        }
-      }
-
-      // Preserve arrowhead styles if they exist
-      if ((element as any).startArrowhead) {
-        baseCommand.startArrowhead = (element as any).startArrowhead;
-      }
-      if ((element as any).endArrowhead) {
-        baseCommand.endArrowhead = (element as any).endArrowhead;
-      }
-    } else {
-      if (element.boundElements && element.boundElements.length > 0) {
-        baseCommand.boundElements = element.boundElements.map((bound) => ({
-          id: bound.id,
-          type: bound.type,
-        }));
-      }
-    }
-
-    return baseCommand;
-  });
+  return activeElements.map((element) => JSON.parse(JSON.stringify(element)));
 }
 
-export const Whiteboard = ({ board, onStateChange }: WhiteboardProps) => {
-  const boardElements = (board.elements ?? []) as ExcalidrawElementSkeleton[];
+export const Whiteboard = ({
+  board,
+  onStateChange,
+  llmResponse,
+  onLlmResponseProcessed,
+}: WhiteboardProps) => {
+  const initialElements: OrderedExcalidrawElement[] = useMemo(() => {
+    const boardElements = Array.isArray(board.elements)
+      ? (board.elements as ExcalidrawElementSkeleton[])
+      : [];
 
-  const initialElements: OrderedExcalidrawElement[] =
-    convertToExcalidrawElements(boardElements, {
-      regenerateIds: false,
-    });
+    try {
+      return convertToExcalidrawElements(boardElements, {
+        regenerateIds: false,
+      });
+    } catch (error) {
+      console.error("Failed to convert board elements", {
+        error,
+        boardId: board.id,
+        elements: board.elements,
+      });
+      return [];
+    }
+  }, [board.elements, board.id]);
 
   const excalidrawAPI = useRef<ExcalidrawAPI | null>(null);
   const previousElementsRef =
@@ -133,6 +73,11 @@ export const Whiteboard = ({ board, onStateChange }: WhiteboardProps) => {
 
   const [elements, setElements] =
     useState<readonly ExcalidrawElement[]>(initialElements);
+
+  useEffect(() => {
+    setElements(initialElements);
+    previousElementsRef.current = initialElements;
+  }, [initialElements]);
 
   const elementsHaveChanged = useCallback(
     (
@@ -215,6 +160,71 @@ export const Whiteboard = ({ board, onStateChange }: WhiteboardProps) => {
   const handleAPI = useCallback((api: ExcalidrawAPI) => {
     excalidrawAPI.current = api;
   }, []);
+
+  useEffect(() => {
+    if (!llmResponse || !excalidrawAPI.current) return;
+
+    try {
+      let response: {
+        action: "add" | "update" | "delete";
+        elements?: ExcalidrawElementSkeleton[];
+        delete_ids?: string[];
+      };
+
+      if (typeof llmResponse === "string") {
+        response = JSON.parse(llmResponse);
+      } else {
+        response = llmResponse;
+      }
+
+      const currentElements = excalidrawAPI.current.getSceneElements();
+
+      if (response.action === "delete" && response.delete_ids) {
+        const updatedElements = currentElements.map((el) => {
+          if (response.delete_ids?.includes(el.id)) {
+            return { ...el, isDeleted: true };
+          }
+          return el;
+        });
+        excalidrawAPI.current.updateScene({ elements: updatedElements });
+        setElements(updatedElements);
+      } else if (
+        (response.action === "add" || response.action === "update") &&
+        response.elements
+      ) {
+        const newElements = convertToExcalidrawElements(response.elements, {
+          regenerateIds: false,
+        });
+
+        if (response.action === "add") {
+          const updatedElements = [...currentElements, ...newElements];
+          excalidrawAPI.current.updateScene({ elements: updatedElements });
+          setElements(updatedElements);
+        } else if (response.action === "update") {
+          const elementMap = new Map(currentElements.map((el) => [el.id, el]));
+          newElements.forEach((newEl) => {
+            if (elementMap.has(newEl.id)) {
+              const existingEl = elementMap.get(newEl.id)!;
+              elementMap.set(newEl.id, { ...existingEl, ...newEl });
+            }
+          });
+
+          const updatedElements = Array.from(elementMap.values());
+          excalidrawAPI.current.updateScene({ elements: updatedElements });
+          setElements(updatedElements);
+        }
+      }
+
+      if (onLlmResponseProcessed) {
+        onLlmResponseProcessed();
+      }
+    } catch (error) {
+      console.error("Error processing LLM response:", error);
+      if (onLlmResponseProcessed) {
+        onLlmResponseProcessed();
+      }
+    }
+  }, [llmResponse, onLlmResponseProcessed]);
 
   return (
     <div className="h-full w-full relative flex flex-col">

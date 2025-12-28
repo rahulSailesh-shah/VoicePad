@@ -147,13 +147,13 @@ class SpeechSession:
                         logger.warning(f"Failed to remove temp file {tmp_path}: {e}")
             
             if transcription and self.transcription_callback:
-                logger.info(f"Session {self.session_id} transcribed: {transcription[:50]}...")
+                logger.info(f"Session {self.session_id} transcribed: {transcription[:]}...")
                 try:
                     self.transcription_callback(transcription)
                 except Exception as e:
                     logger.error(f"Error in transcription callback for session {self.session_id}: {e}")
             elif transcription:
-                logger.info(f"Session {self.session_id} transcribed: {transcription[:50]}... (no callback)")
+                logger.info(f"Session {self.session_id} transcribed: {transcription[:]}... (no callback)")
                 
         except Exception as e:
             logger.error(f"Transcription error for session {self.session_id}: {e}")

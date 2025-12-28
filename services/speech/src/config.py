@@ -43,7 +43,7 @@ class AppConfig:
                 model=os.getenv("STT_MODEL", "base"),
                 language=os.getenv("STT_LANGUAGE", "en") or None,
                 silero_sensitivity=float(os.getenv("STT_SILERO_SENSITIVITY", "0.5")),
-                post_speech_silence_duration=float(os.getenv("STT_SILENCE_DURATION", "0.4")),
+                post_speech_silence_duration=float(os.getenv("STT_SILENCE_DURATION", "0.8")),
                 min_speech_duration=float(os.getenv("STT_MIN_SPEECH_DURATION", "0.3")),
                 sample_rate=int(os.getenv("STT_SAMPLE_RATE", "16000")),
             ),

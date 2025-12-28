@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { RoomEvent } from "livekit-client";
 import "@livekit/components-styles";
 import {
@@ -49,6 +49,7 @@ const MuteOnJoin = () => {
 export const BoardRoomView = ({ board, token }: BoardRoomViewProps) => {
   const navigate = useNavigate();
   const { mutate: updateBoardMutation } = useMutationUpdateBoard();
+  const [llmResponse, setLlmResponse] = useState<any>(null);
 
   if (!token) {
     return (
@@ -59,6 +60,7 @@ export const BoardRoomView = ({ board, token }: BoardRoomViewProps) => {
   }
 
   const handleStateChange = (state: WhiteboardStateChange) => {
+    console.log(state.elements);
     const commands = convertFromExcalidrawElements(state.elements);
     updateBoardMutation({
       id: board.id.toString(),
@@ -66,6 +68,11 @@ export const BoardRoomView = ({ board, token }: BoardRoomViewProps) => {
         elements: commands,
       },
     });
+  };
+
+  const onCanvasUpdate = (response: any) => {
+    console.log("Canvas update:", response);
+    setLlmResponse(response);
   };
 
   return (
@@ -90,9 +97,14 @@ export const BoardRoomView = ({ board, token }: BoardRoomViewProps) => {
             className="absolute inset-0"
             style={{ width: "100%", height: "100%" }}
           >
-            <Whiteboard board={board} onStateChange={handleStateChange} />
+            <Whiteboard
+              board={board}
+              onStateChange={handleStateChange}
+              llmResponse={llmResponse}
+              onLlmResponseProcessed={() => setLlmResponse(null)}
+            />
           </div>
-          <DraggableControlsLayout />
+          <DraggableControlsLayout onCanvasUpdate={onCanvasUpdate} />
         </div>
       </LiveKitRoom>
     </div>

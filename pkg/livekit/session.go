@@ -26,7 +26,7 @@ import (
 type SessionCallbacks struct {
 	OnMeetingEnd  func(meetingID string, recordingURL string, transcriptURL string, err error)
 	OnLLMResponse func(boardID string, response *llm.LLMResponse, err error)
-	GetBoardState func(boardID string) (json.RawMessage, error)
+	GetBoardState func(boardID string, userID string) (json.RawMessage, error)
 }
 
 type StreamTextData struct {
@@ -69,7 +69,7 @@ func NewLiveKitSession(
 		return nil, fmt.Errorf("failed to create speech client: %w", err)
 	}
 
-	llmClient, err := llm.NewLLMClient(llm.LLMProviderOllama)
+	llmClient, err := llm.NewLLMClient(&cfg.LLM)
 	if err != nil {
 		speechClient.Close()
 		cancel()
@@ -169,7 +169,7 @@ func (s *LiveKitSession) connectBot() error {
 		UserID:       s.userDetails.ID,
 		SpeechClient: s.speechClient,
 		LLMClient:    s.llmClient,
-		OnLLMResponse: func( response *llm.LLMResponse, err error) {
+		OnLLMResponse: func(response *llm.LLMResponse, err error) {
 			if err != nil {
 				logger.Errorw("LLM error", err)
 				if s.callbacks.OnLLMResponse != nil {
@@ -186,12 +186,18 @@ func (s *LiveKitSession) connectBot() error {
 
 			fmt.Println("LLM response", string(jsonData))
 
-			// s.textStreamQueue <- StreamTextData{
-			// 	Type: "canvas_update",
-			// 	Data: response,
-			// }
+			s.textStreamQueue <- StreamTextData{
+				Type: "canvas_update",
+				Data: response,
+			}
 		},
-		GetBoardState: s.callbacks.GetBoardState,
+		GetBoardState: func() (string, error) {
+			boardState, err := s.callbacks.GetBoardState(s.boardID, s.userDetails.ID)
+			if err != nil {
+				return "", err
+			}
+			return string(boardState), nil
+		},
 	})
 	if err != nil {
 		close(audioWriterChan)
@@ -246,9 +252,6 @@ func (s *LiveKitSession) callbacksForRoom() *lksdk.RoomCallback {
 				pcmRemoteTrack, _ = s.handleSubscribe(track)
 			},
 			OnTrackMuted: func(pub lksdk.TrackPublication, p lksdk.Participant) {
-				// Handle track mute - close transcription session
-				// Note: With VAD, transcriptions arrive automatically when silence is detected,
-				// so mute just closes the session cleanly
 				if pub.Kind() == lksdk.TrackKindAudio {
 					logger.Infow("Audio track muted", "participant", p.Identity())
 					go func() {
@@ -259,7 +262,6 @@ func (s *LiveKitSession) callbacksForRoom() *lksdk.RoomCallback {
 				}
 			},
 			OnTrackUnmuted: func(pub lksdk.TrackPublication, p lksdk.Participant) {
-				// Handle track unmute - start new transcription session
 				if pub.Kind() == lksdk.TrackKindAudio {
 					logger.Infow("Audio track unmuted", "participant", p.Identity())
 					go func() {
@@ -287,7 +289,6 @@ func (s *LiveKitSession) callbacksForRoom() *lksdk.RoomCallback {
 		},
 	}
 }
-
 
 func (s *LiveKitSession) handlePublish(audioWriterChan chan media.PCM16Sample) {
 	publishTrack, err := lkmedia.NewPCMLocalTrack(24000, 1, logger.GetLogger())
@@ -326,7 +327,6 @@ func (s *LiveKitSession) handleTextStreamQueue() {
 		select {
 		case data, ok := <-s.textStreamQueue:
 			if !ok {
-				// Channel closed, exit worker
 				return
 			}
 			marshalData, err := json.Marshal(data)
@@ -363,7 +363,7 @@ func (s *LiveKitSession) handleSubscribe(track *webrtc.TrackRemote) (*lkmedia.PC
 
 func (s *LiveKitSession) startRecording() (*livekit.EgressInfo, error) {
 	req := &livekit.RoomCompositeEgressRequest{
-		RoomName:  ""	,
+		RoomName:  "",
 		Layout:    "grid",
 		AudioOnly: false,
 	}

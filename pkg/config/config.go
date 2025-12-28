@@ -36,8 +36,6 @@ type AuthConfig struct {
 	JwksURL string
 }
 
-
-
 type LiveKitConfig struct {
 	Host      string
 	APIKey    string
@@ -58,9 +56,10 @@ type GeminiConfig struct {
 }
 
 type LLMConfig struct {
-	Provider string // "ollama" or "gemini"
-	Host     string // Ollama host (e.g., "http://localhost:11434")
+	Provider string // "ollama", "gemini", or "nvidia"
+	Host     string // Provider host or base URL
 	Model    string // Model name (e.g., "llama3.2", "qwen2.5")
+	APIKey   string // API key for providers that require it (e.g., Nvidia)
 }
 
 type SpeechConfig struct {
@@ -79,6 +78,13 @@ func LoadConfig() (*AppConfig, error) {
 	portInt, err := strconv.Atoi(portStr)
 	if err != nil {
 		portInt = 5432
+	}
+	provider := getEnvOrDefault("LLM_PROVIDER", "ollama")
+	defaultLLMHost := "http://localhost:11434"
+	defaultLLMModel := "llama3.2"
+	if provider == "nvidia" {
+		defaultLLMHost = "https://integrate.api.nvidia.com/v1/chat/completions"
+		defaultLLMModel = "meta/llama-4-maverick-17b-128e-instruct"
 	}
 	config := &AppConfig{
 		DB: DBConfig{
@@ -116,9 +122,10 @@ func LoadConfig() (*AppConfig, error) {
 			Host: getEnvOrDefault("SPEECH_SERVICE_HOST", "localhost:50051"),
 		},
 		LLM: LLMConfig{
-			Provider: getEnvOrDefault("LLM_PROVIDER", "ollama"),
-			Host:     getEnvOrDefault("LLM_HOST", "http://localhost:11434"),
-			Model:    getEnvOrDefault("LLM_MODEL", "llama3.2"),
+			Provider: provider,
+			Host:     getEnvOrDefault("LLM_HOST", defaultLLMHost),
+			Model:    getEnvOrDefault("LLM_MODEL", defaultLLMModel),
+			APIKey:   os.Getenv("LLM_API_KEY"),
 		},
 		LogLevel: "info",
 		Env:      os.Getenv("APP_ENV"),

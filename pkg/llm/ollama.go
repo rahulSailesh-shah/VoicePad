@@ -2,16 +2,20 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"draw/pkg/llm/prompts"
 
 	"github.com/ollama/ollama/api"
 )
 
 type llmRequest struct {
 	prompt     string
+	systemPrompt string
 	resultCh chan *LLMResponse
 	errCh    chan error
 }
@@ -54,7 +58,7 @@ func (c *OllamaLLMClient) worker() {
 		case <-c.ctx.Done():
 			return
 		case req := <-c.requestChan:
-			result, err := c.generateResponseSync(req.prompt)
+			result, err := c.generateResponseSync(req.prompt, req.systemPrompt)
 			if err != nil {
 				req.errCh <- err
 			} else {
@@ -64,19 +68,37 @@ func (c *OllamaLLMClient) worker() {
 	}
 }
 
-func (c *OllamaLLMClient) GenerateResponse(ctx context.Context, prompt string) (*LLMResponse, error) {
+func (c *OllamaLLMClient) GenerateResponse(ctx context.Context, prompt string, boardState string) (*LLMResponse, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("empty text provided")
 	}
+
+	// Format board state as JSON string if it's not empty
+	boardStateJSON := boardState
+	if boardState == "" {
+		boardStateJSON = "[]"
+	} else {
+		// Validate it's valid JSON
+		var js json.RawMessage
+		if err := json.Unmarshal([]byte(boardState), &js); err != nil {
+			// If not valid JSON, wrap it in an array or use empty array
+			boardStateJSON = "[]"
+		}
+	}
+
+	// Build the user prompt with board state
+	userPrompt := prompts.BuildWhiteboardPrompt(prompt, boardStateJSON)
+	systemPrompt := prompts.WhiteboardSystemPrompt
 
 	resultCh := make(chan *LLMResponse, 1)
 	errCh := make(chan error, 1)
 
 	select {
 	case c.requestChan <- llmRequest{
-		prompt:     prompt,
-		resultCh: resultCh,
-		errCh:    errCh,
+		prompt:       userPrompt,
+		systemPrompt: systemPrompt,
+		resultCh:    resultCh,
+		errCh:       errCh,
 	}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -92,18 +114,24 @@ func (c *OllamaLLMClient) GenerateResponse(ctx context.Context, prompt string) (
 	}
 }
 
-func (c *OllamaLLMClient) generateResponseSync(prompt string) (*LLMResponse, error) {
-	prompt = "You are a helpful assistant. Respond to the user's prompt in a friendly and helpful manner. The user's prompt is: " + prompt	
-
+func (c *OllamaLLMClient) generateResponseSync(prompt string, systemPrompt string) (*LLMResponse, error) {
 	req := &api.GenerateRequest{
 		Model:  c.model,
 		Prompt: prompt,
 		Stream: new(bool),
 		Options: map[string]any{
 			"temperature": 0.1,
-			"num_predict": 200,
+			"num_predict": 2000,
 		},
 	}
+
+	// Set system prompt if provided
+	if systemPrompt != "" {
+		req.System = systemPrompt
+	}
+
+	// daata, _ := json.MarshalIndent(req, "", "  ")
+	// fmt.Println("Request", string(daata))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

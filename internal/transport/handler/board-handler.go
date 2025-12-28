@@ -104,3 +104,23 @@ func (h *BoardHandler) UpdateBoard(c *gin.Context) {
 		Data:    resp,
 	})
 }
+
+func (h *BoardHandler) DeleteBoard(c *gin.Context) {
+	
+	boardId := c.Param("id")
+	userId := c.MustGet("userId").(string)
+	err := h.boardService.DeleteBoard(c.Request.Context(), dto.DeleteBoardRequest{
+		BoardID: boardId,
+		UserID:  userId,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse{
+			Message: "Failed to delete board",
+			Error:   err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, dto.SuccessResponse{
+		Message: "Board deleted",
+	})
+}

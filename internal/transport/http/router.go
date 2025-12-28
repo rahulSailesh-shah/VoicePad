@@ -43,4 +43,5 @@ func RegisterRoutes(r *gin.Engine, authKeys jwk.Set, app *app.App) {
 	protected.GET("/boards/:id", boardHandler.GetBoard)
 	protected.POST("/boards", boardHandler.CreateBoard)
 	protected.PUT("/boards/:id", boardHandler.UpdateBoard)
+	protected.DELETE("/boards/:id", boardHandler.DeleteBoard)
 }
