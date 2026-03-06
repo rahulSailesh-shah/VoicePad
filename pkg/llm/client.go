@@ -23,6 +23,7 @@ type LLMProvider string
 const (
 	LLMProviderOllama LLMProvider = "ollama"
 	LLMProviderNvidia LLMProvider = "nvidia"
+	LLMProviderOpenAI LLMProvider = "openai"
 )
 
 func NewLLMClient(cfg *config.LLMConfig) (LLMClient, error) {
@@ -31,10 +32,13 @@ func NewLLMClient(cfg *config.LLMConfig) (LLMClient, error) {
 	}
 
 	switch LLMProvider(cfg.Provider) {
-	case LLMProviderOllama:fmt.Println("Creating Ollama LLM client")
+	case LLMProviderOllama:
+		fmt.Println("Creating Ollama LLM client")
 		return NewOllamaLLMClient(cfg.Host, cfg.Model)
 	case LLMProviderNvidia:
 		return NewNvidiaLLMClient(cfg.Host, cfg.Model, cfg.APIKey)
+	case LLMProviderOpenAI:
+		return NewOpenAILLMClient(cfg.Host, cfg.Model, cfg.APIKey)
 	default:
 		return nil, fmt.Errorf("unknown LLM provider: %s", cfg.Provider)
 	}

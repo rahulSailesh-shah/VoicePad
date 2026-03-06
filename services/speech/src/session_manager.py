@@ -1,356 +1,246 @@
-"""Session manager for per-user speech processing isolation (STT only)."""
+"""Optimized session manager."""
 
 import threading
 import logging
-import tempfile
-import os
-import queue
 import time
+import numpy as np
+import torch
+from collections import deque
 from dataclasses import dataclass, field
-from io import BytesIO
 from typing import Callable, Optional
-
-from .config import config, STTConfig
+from faster_whisper import WhisperModel
 
 logger = logging.getLogger(__name__)
 
+# Shared resources (loaded once)
+_SHARED_WHISPER_MODEL = None
+_SHARED_VAD_MODEL = None
+_MODEL_LOCK = threading.Lock()
 
-@dataclass
-class SpeechSession:
-    session_id: str
-    stt_config: STTConfig
-    transcription_callback: Optional[Callable[[str], None]] = None
+
+def get_shared_models():
+    """Get or create shared Whisper and VAD models."""
+    global _SHARED_WHISPER_MODEL, _SHARED_VAD_MODEL
     
-    _speech_buffer: BytesIO = field(default_factory=BytesIO)  # Buffer for current speech segment
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-    
-    _vad_model: object | None = None
-    _vad_utils: object | None = None
-    _whisper_model: object | None = None
-    _vad_audio_buffer: list = field(default_factory=list)  # Buffer for VAD processing (512 sample frames)
-    _is_speaking: bool = False
-    _silence_start_time: float | None = None
-    _speech_start_time: float | None = None
-    _closed: bool = False
-    
-    _processing_thread: threading.Thread | None = None
-    _stop_event: threading.Event = field(default_factory=threading.Event)
-    
-    def __post_init__(self):
-        self._initialize_models()
-        self._start_processing_thread()
-    
-    def _initialize_models(self):
-        """Initialize VAD and Whisper models."""
-        try:
-            import torch
-            self._vad_model, utils = torch.hub.load(
+    with _MODEL_LOCK:
+        if _SHARED_WHISPER_MODEL is None:
+            _SHARED_WHISPER_MODEL = WhisperModel(
+                "base",
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=8,
+                num_workers=1
+            )
+            logger.info("Loaded shared Whisper model")
+        
+        if _SHARED_VAD_MODEL is None:
+            _SHARED_VAD_MODEL, _ = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False,
                 onnx=False
             )
-            self._vad_model.eval()
-            self._vad_utils = utils
-            logger.info(f"Initialized Silero VAD for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Failed to initialize Silero VAD for session {self.session_id}: {e}", exc_info=True)
-            self._vad_model = None
-            self._vad_utils = None
+            _SHARED_VAD_MODEL.eval()
+            logger.info("Loaded shared VAD model")
         
-    def _get_whisper_model(self):
-        if self._whisper_model is None:
-            try:
-                from faster_whisper import WhisperModel
-                self._whisper_model = WhisperModel(
-                    self.stt_config.model,
-                    device="cpu",
-                    compute_type="int8"
-                )
-                logger.info(f"Initialized Whisper model ({self.stt_config.model}) for session {self.session_id}")
-            except ImportError:
-                logger.warning("faster-whisper not available, using fallback")
-                self._whisper_model = FallbackTranscriber()
-        return self._whisper_model
+        return _SHARED_WHISPER_MODEL, _SHARED_VAD_MODEL
+
+
+@dataclass
+class SpeechSession:
+    session_id: str
+    sample_rate: int = 16000
+    silence_threshold: float = 0.5  # seconds
+    min_speech_duration: float = 0.2  # seconds
+    vad_sensitivity: float = 0.5
+    transcription_callback: Optional[Callable[[str], None]] = None
     
-    def _start_processing_thread(self):
-        if self._processing_thread is not None:
-            return
-        
-        self._stop_event.clear()
-        self._processing_thread = threading.Thread(
-            target=self._process_audio_loop,
-            daemon=True,
-            name=f"SpeechSession-{self.session_id}"
-        )
-        self._processing_thread.start()
-        logger.debug(f"Started processing thread for session {self.session_id}")
+    # Audio buffers (use list of chunks, not BytesIO)
+    _speech_chunks: list[bytes] = field(default_factory=list)
+    _vad_buffer: deque = field(default_factory=lambda: deque(maxlen=8000))  # 0.5s at 16kHz
     
-    def _process_audio_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                with self._lock:
-                    if self._is_speaking and self._silence_start_time is not None:
-                        silence_duration = time.time() - self._silence_start_time
-                        
-                        if silence_duration >= self.stt_config.post_speech_silence_duration:
-                            if self._speech_start_time is not None:
-                                speech_duration = self._silence_start_time - self._speech_start_time
-                                
-                                if speech_duration >= self.stt_config.min_speech_duration:
-                                    audio_data = self._speech_buffer.getvalue()
-                                    if len(audio_data) > 0:
-                                        self._transcribe_and_send(audio_data)
-                                
-                                self._speech_buffer = BytesIO()
-                                self._is_speaking = False
-                                self._speech_start_time = None
-                                self._silence_start_time = None
-                            else:
-                                pass
-                                self._speech_buffer = BytesIO()
-                                self._is_speaking = False
-                                self._silence_start_time = None
-                
-                self._stop_event.wait(0.1)
-                
-            except Exception as e:
-                logger.error(f"Error in processing loop for session {self.session_id}: {e}")
-                self._stop_event.wait(0.1)
+    # State
+    _is_speaking: bool = False
+    _speech_start_time: float = 0.0
+    _silence_start_time: float = 0.0
     
-    def _transcribe_and_send(self, audio_data: bytes):
-        """Transcribe audio data and send via callback."""
-        if self._closed:
-            return
-        
-        try:
-            model = self._get_whisper_model()
-            
-            if isinstance(model, FallbackTranscriber):
-                transcription = model.transcribe(audio_data)
-            else:
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-                    self._write_wav(tmp_file, audio_data)
-                
-                try:
-                    segments, info = model.transcribe(
-                        tmp_path,
-                        language=self.stt_config.language,
-                        beam_size=5
-                    )
-                    transcription = " ".join([seg.text for seg in segments]).strip()
-                finally:
-                    try:
-                        os.remove(tmp_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to remove temp file {tmp_path}: {e}")
-            
-            if transcription and self.transcription_callback:
-                logger.info(f"Session {self.session_id} transcribed: {transcription[:]}...")
-                try:
-                    self.transcription_callback(transcription)
-                except Exception as e:
-                    logger.error(f"Error in transcription callback for session {self.session_id}: {e}")
-            elif transcription:
-                logger.info(f"Session {self.session_id} transcribed: {transcription[:]}... (no callback)")
-                
-        except Exception as e:
-            logger.error(f"Transcription error for session {self.session_id}: {e}")
+    # Threading
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _closed: bool = False
+    
+    # Shared models (references, not copies)
+    _whisper_model: WhisperModel = field(init=False)
+    _vad_model: torch.nn.Module = field(init=False)
+    
+    def __post_init__(self):
+        self._whisper_model, self._vad_model = get_shared_models()
     
     def feed_audio(self, audio_chunk: bytes) -> None:
+        """Feed audio chunk for VAD and buffering."""
         if self._closed or not audio_chunk:
             return
         
+        # Convert to float32 outside lock
+        audio_array = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+        
         with self._lock:
-            # Fallback: buffer all audio if VAD not available
-            if self._vad_model is None:
-                self._speech_buffer.write(audio_chunk)
-                if not self._is_speaking:
-                    self._is_speaking = True
-                    self._speech_start_time = time.time()
-                self._silence_start_time = None
-                return
+            # Always buffer audio
+            self._speech_chunks.append(audio_chunk)
             
-            # Process audio chunk through VAD
-            try:
-                import torch
-                import numpy as np
-                self._speech_buffer.write(audio_chunk)
-                audio_array = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32) / 32768.0
-                self._vad_audio_buffer.extend(audio_array.tolist())
-                VAD_FRAME_SIZE = 512
+            # Process through VAD
+            self._vad_buffer.extend(audio_array)
+            
+            # Process in 512-sample frames
+            while len(self._vad_buffer) >= 512:
+                # Get frame (efficient with deque)
+                frame = np.array(list(self._vad_buffer)[:512])
                 
-                while len(self._vad_audio_buffer) >= VAD_FRAME_SIZE:
-                    frame_samples = self._vad_audio_buffer[:VAD_FRAME_SIZE]
-                    self._vad_audio_buffer = self._vad_audio_buffer[VAD_FRAME_SIZE:]
-                    audio_tensor = torch.FloatTensor(frame_samples).unsqueeze(0)
-                    with torch.no_grad():
-                        speech_prob = self._vad_model(audio_tensor, self.stt_config.sample_rate).item()
-                    is_speech = speech_prob >= self.stt_config.silero_sensitivity
-                    
-                    if is_speech:
-                        if not self._is_speaking:
-                            self._is_speaking = True
-                            self._speech_start_time = time.time()
-                            self._silence_start_time = None
-                            logger.debug(f"Speech started for session {self.session_id}")
-                    else:
-                        if self._is_speaking:
-                            if self._silence_start_time is None:
-                                self._silence_start_time = time.time()
-                                logger.debug(f"Silence started for session {self.session_id}")
-                        else:
-                            self._silence_start_time = None
+                # Remove processed samples
+                for _ in range(512):
+                    self._vad_buffer.popleft()
                 
-            except Exception as e:
-                logger.error(f"VAD processing error for session {self.session_id}: {e}", exc_info=True)
-                self._speech_buffer.write(audio_chunk)
-                if not self._is_speaking:
-                    self._is_speaking = True
-                    self._speech_start_time = time.time()
-                self._silence_start_time = None
+                # VAD detection
+                with torch.no_grad():
+                    speech_prob = self._vad_model(
+                        torch.FloatTensor(frame).unsqueeze(0),
+                        self.sample_rate
+                    ).item()
+                
+                is_speech = speech_prob >= self.vad_sensitivity
+                current_time = time.time()
+                
+                if is_speech:
+                    if not self._is_speaking:
+                        # Speech started
+                        self._is_speaking = True
+                        self._speech_start_time = current_time
+                        self._silence_start_time = 0.0
+                        logger.debug(f"[{self.session_id}] Speech started")
+                else:
+                    if self._is_speaking:
+                        # Potential silence
+                        if self._silence_start_time == 0.0:
+                            self._silence_start_time = current_time
+                        
+                        silence_duration = current_time - self._silence_start_time
+                        
+                        # End of utterance?
+                        if silence_duration >= self.silence_threshold:
+                            speech_duration = self._silence_start_time - self._speech_start_time
+                            
+                            if speech_duration >= self.min_speech_duration:
+                                # Transcribe in background
+                                audio_to_transcribe = b''.join(self._speech_chunks)
+                                threading.Thread(
+                                    target=self._transcribe_async,
+                                    args=(audio_to_transcribe,),
+                                    daemon=True
+                                ).start()
+                            
+                            # Reset
+                            self._speech_chunks.clear()
+                            self._is_speaking = False
+                            self._speech_start_time = 0.0
+                            self._silence_start_time = 0.0
+                            logger.debug(f"[{self.session_id}] Utterance complete")
     
+    def _transcribe_async(self, audio_data: bytes):
+        """Transcribe audio in background thread."""
+        try:
+            # Convert to numpy array
+            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # Transcribe (no temp file!)
+            segments, info = self._whisper_model.transcribe(
+                audio_array,
+                language="en",
+                beam_size=1,
+                best_of=1,
+                temperature=0.0,
+                without_timestamps=True
+            )
+            
+            text = " ".join([seg.text for seg in segments]).strip()
+            
+            if text and self.transcription_callback:
+                logger.info(f"[{self.session_id}] Transcribed: {text}")
+                self.transcription_callback(text)
+        
+        except Exception as e:
+            logger.error(f"[{self.session_id}] Transcription error: {e}", exc_info=True)
+    
+
     def finalize_transcription(self) -> str:
+        """Finalize transcription and return final text."""
         with self._lock:
-            if self._is_speaking and len(self._speech_buffer.getvalue()) > 0:
-                audio_data = self._speech_buffer.getvalue()
-                self._speech_buffer = BytesIO()
-                self._is_speaking = False
-                self._speech_start_time = None
-                self._silence_start_time = None
-                
-                transcription_result = [None]
-                
-                def callback(text: str):
-                    transcription_result[0] = text
-                
-                old_callback = self.transcription_callback
-                self.transcription_callback = callback
-                self._transcribe_and_send(audio_data)
-                self.transcription_callback = old_callback
-                
-                return transcription_result[0] or ""
-            return ""
-    
-    def _write_wav(self, file, audio_data: bytes, sample_rate: int = 16000, channels: int = 1, bits_per_sample: int = 16):
-        import struct
-        
-        byte_rate = sample_rate * channels * bits_per_sample // 8
-        block_align = channels * bits_per_sample // 8
-        data_size = len(audio_data)
-        
-        file.write(b'RIFF')
-        file.write(struct.pack('<I', 36 + data_size))
-        file.write(b'WAVE')
-        file.write(b'fmt ')
-        file.write(struct.pack('<I', 16))
-        file.write(struct.pack('<H', 1))
-        file.write(struct.pack('<H', channels))
-        file.write(struct.pack('<I', sample_rate))
-        file.write(struct.pack('<I', byte_rate))
-        file.write(struct.pack('<H', block_align))
-        file.write(struct.pack('<H', bits_per_sample))
-        file.write(b'data')
-        file.write(struct.pack('<I', data_size))
-        file.write(audio_data)
-    
-    def cleanup(self) -> None:
-        logger.info(f"Cleaning up session: {self.session_id}")
-        
-        self._closed = True
-        
-        if self._processing_thread is not None:
-            self._stop_event.set()
-            self._processing_thread.join(timeout=2.0)
-            if self._processing_thread.is_alive():
-                logger.warning(f"Processing thread for session {self.session_id} did not stop gracefully")
-            self._processing_thread = None
-        
+            # Transcribe any remaining buffered audio
+            if self._speech_chunks and self._is_speaking:
+                audio_to_transcribe = b''.join(self._speech_chunks)
+                try:
+                    audio_array = np.frombuffer(audio_to_transcribe, dtype=np.int16).astype(np.float32) / 32768.0
+                    segments, info = self._whisper_model.transcribe(
+                        audio_array,
+                        language="en",
+                        beam_size=1,
+                        best_of=1,
+                        temperature=0.0,
+                        without_timestamps=True
+                    )
+                    text = " ".join([seg.text for seg in segments]).strip()
+                    # Reset session
+                    self._speech_chunks.clear()
+                    self._vad_buffer.clear()
+                    self._is_speaking = False
+                    self._speech_start_time = 0.0
+                    self._silence_start_time = 0.0
+            
+                    return text
+                except Exception as e:
+                    logger.error(f"[{self.session_id}] Final transcription error: {e}")
+            
+            
+
+    def cleanup(self):
+        """Cleanup session resources."""
         with self._lock:
-            if self._is_speaking and len(self._speech_buffer.getvalue()) > 0:
-                audio_data = self._speech_buffer.getvalue()
-                self._transcribe_and_send(audio_data)
-            
-            # Clear buffers
-            self._speech_buffer = BytesIO()
-            self._is_speaking = False
-            self._speech_start_time = None
-            self._silence_start_time = None
-            
-            # Release models
-            self._vad_model = None
-            self._vad_utils = None
-            self._vad_audio_buffer = []
-            self._whisper_model = None
-            self.transcription_callback = None
+            self._closed = True
+            self._speech_chunks.clear()
+            self._vad_buffer.clear()
+            # Don't delete shared models
         
-        logger.debug(f"Session {self.session_id} cleaned up")
-
-
-class FallbackTranscriber:
-    """Fallback transcriber when faster-whisper is not available."""
-    
-    def transcribe(self, audio_data: bytes) -> str:
-        logger.warning("Using fallback transcription (returns placeholder)")
-        return "[Transcription unavailable - faster-whisper not installed]"
+        logger.info(f"[{self.session_id}] Cleaned up")
 
 
 class SessionManager:
-    """
-    Manages speech sessions for multiple users (STT only).
-    Each session is isolated by session_id (format: "boardId:participantId").
-    """
-    
     def __init__(self):
         self._sessions: dict[str, SpeechSession] = {}
         self._lock = threading.Lock()
-        logger.info("SessionManager initialized")
     
-    def get_or_create(self, session_id: str, transcription_callback: Optional[Callable[[str], None]] = None) -> SpeechSession:
-        """Get existing session or create new one."""
+    def get_or_create(
+        self,
+        session_id: str,
+        transcription_callback: Optional[Callable[[str], None]] = None
+    ) -> SpeechSession:
         with self._lock:
             if session_id not in self._sessions:
                 self._sessions[session_id] = SpeechSession(
                     session_id=session_id,
-                    stt_config=config.stt,
-                    transcription_callback=transcription_callback,
+                    transcription_callback=transcription_callback
                 )
-            elif transcription_callback:
-                # Update callback if provided
-                self._sessions[session_id].transcription_callback = transcription_callback
             return self._sessions[session_id]
     
-    def get(self, session_id: str) -> SpeechSession | None:
-        """Get session by ID, returns None if not found."""
-        with self._lock:
-            return self._sessions.get(session_id)
-    
     def cleanup(self, session_id: str) -> bool:
-        """Cleanup and remove a session."""
         with self._lock:
             if session_id in self._sessions:
                 self._sessions[session_id].cleanup()
                 del self._sessions[session_id]
-                logger.info(f"Session {session_id} removed from manager")
                 return True
             return False
     
-    def cleanup_all(self) -> None:
-        """Cleanup all sessions (for shutdown)."""
-        with self._lock:
-            session_ids = list(self._sessions.keys())
-            for session_id in session_ids:
-                self._sessions[session_id].cleanup()
-            self._sessions.clear()
-        logger.info("All sessions cleaned up")
-    
     @property
     def active_session_count(self) -> int:
-        """Get count of active sessions."""
         with self._lock:
             return len(self._sessions)
 
 
-# Global session manager instance
 session_manager = SessionManager()

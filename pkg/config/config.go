@@ -82,10 +82,7 @@ func LoadConfig() (*AppConfig, error) {
 	provider := getEnvOrDefault("LLM_PROVIDER", "ollama")
 	defaultLLMHost := "http://localhost:11434"
 	defaultLLMModel := "llama3.2"
-	if provider == "nvidia" {
-		defaultLLMHost = "https://integrate.api.nvidia.com/v1/chat/completions"
-		defaultLLMModel = "meta/llama-4-maverick-17b-128e-instruct"
-	}
+
 	config := &AppConfig{
 		DB: DBConfig{
 			Driver:   os.Getenv("DB_DRIVER"),

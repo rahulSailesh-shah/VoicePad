@@ -36,14 +36,13 @@ func NewBoardService(
 	return &boardService{
 		db:      db,
 		queries: queries,
-		config: config,
+		config:  config,
 	}
 }
 
-
 func (s *boardService) CreateBoard(ctx context.Context, req dto.CreateBoardRequest) (*dto.CreateBoardResponse, error) {
 	board, err := s.queries.CreateBoard(ctx, repo.CreateBoardParams{
-		Name: req.Name,
+		Name:    req.Name,
 		OwnerID: req.UserID,
 	})
 
@@ -53,17 +52,16 @@ func (s *boardService) CreateBoard(ctx context.Context, req dto.CreateBoardReque
 
 	return &dto.CreateBoardResponse{
 		BoardID: board.ID,
-
 	}, nil
 }
 
 func (s *boardService) GetBoard(ctx context.Context, req dto.GetBoardRequest) (*dto.GetBoardResponse, error) {
 	board, err := s.queries.GetBoardByID(ctx, repo.GetBoardByIDParams{
-		ID:     uuid.MustParse(req.BoardID),
+		ID:      uuid.MustParse(req.BoardID),
 		OwnerID: req.UserID,
-	})	
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get board: %w", err)	
+		return nil, fmt.Errorf("failed to get board: %w", err)
 	}
 
 	userDetails, err := s.queries.GetUserByID(ctx, req.UserID)
@@ -77,8 +75,9 @@ func (s *boardService) GetBoard(ctx context.Context, req dto.GetBoardRequest) (*
 		s.config,
 		livekit.SessionCallbacks{
 			GetBoardState: func(boardID string, userID string) (json.RawMessage, error) {
+				fmt.Println("Getting board state for board ID", boardID, "and user ID", userID)
 				board, err := s.queries.GetBoardByID(context.Background(), repo.GetBoardByIDParams{
-					ID: uuid.MustParse(boardID),
+					ID:      uuid.MustParse(boardID),
 					OwnerID: userID,
 				})
 				if err != nil || board.Elements == nil {
@@ -92,7 +91,7 @@ func (s *boardService) GetBoard(ctx context.Context, req dto.GetBoardRequest) (*
 	if err := session.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start session: %w", err)
 	}
-	
+
 	token, err := session.GenerateUserToken()
 	if err != nil {
 		session.Stop()
@@ -121,7 +120,7 @@ func (s *boardService) GetBoardsByUserID(ctx context.Context, req dto.GetBoardsB
 
 func (s *boardService) UpdateBoard(ctx context.Context, req dto.UpdateBoardRequest) (*dto.GetBoardResponse, error) {
 	currentBoard, err := s.queries.GetBoardByID(ctx, repo.GetBoardByIDParams{
-		ID: uuid.MustParse(req.BoardID),
+		ID:      uuid.MustParse(req.BoardID),
 		OwnerID: req.UserID,
 	})
 	if err != nil {
@@ -136,10 +135,10 @@ func (s *boardService) UpdateBoard(ctx context.Context, req dto.UpdateBoardReque
 	}
 
 	board, err := s.queries.UpdateBoard(ctx, repo.UpdateBoardParams{
-		ID: currentBoard.ID,
-		Name: currentBoard.Name,
+		ID:       currentBoard.ID,
+		Name:     currentBoard.Name,
 		Elements: currentBoard.Elements,
-		OwnerID: req.UserID,
+		OwnerID:  req.UserID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update board: %w", err)
@@ -152,20 +151,20 @@ func (s *boardService) UpdateBoard(ctx context.Context, req dto.UpdateBoardReque
 
 func (s *boardService) DeleteBoard(ctx context.Context, req dto.DeleteBoardRequest) error {
 	err := s.queries.DeleteBoard(ctx, repo.DeleteBoardParams{
-		ID: uuid.MustParse(req.BoardID),
+		ID:      uuid.MustParse(req.BoardID),
 		OwnerID: req.UserID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete board: %w", err)
 	}
 	return nil
-}	
+}
 
 func toBoardResponse(board repo.Board) dto.Board {
 	return dto.Board{
-		ID: board.ID,
-		Name: board.Name,
-		OwnerID: board.OwnerID,
+		ID:       board.ID,
+		Name:     board.Name,
+		OwnerID:  board.OwnerID,
 		Elements: board.Elements,
 	}
 }

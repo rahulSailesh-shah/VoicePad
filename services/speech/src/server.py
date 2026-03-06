@@ -1,11 +1,11 @@
-"""gRPC server implementation for Speech Service (STT only)."""
+"""gRPC server implementation for Speech Service (STT, utterance-level)."""
 
 import logging
 import signal
 import sys
 import threading
 from concurrent import futures
-from queue import Queue, Empty
+from queue import Queue
 
 import grpc
 
@@ -19,156 +19,170 @@ except ImportError:
     speech_pb2 = None
     speech_pb2_grpc = None
 
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
-class SpeechServicer:
-    
+class SpeechServicer(speech_pb2_grpc.SpeechServiceServicer):
+
     def StreamTranscribe(self, request_iterator, context):
-        session_id = None
+        """
+        Utterance-level STT stream.
+        Emits exactly one transcription per detected utterance.
+        Safe for STT → LLM → TTS pipelines.
+        """
+
         session = None
-        transcription_queue = Queue()
-        stream_active = threading.Event()
-        stream_active.set()
-        
-        def transcription_callback(transcription: str):
-            if stream_active.is_set() and transcription:
-                try:
-                    transcription_queue.put(transcription)
-                except Exception as e:
-                    logger.error(f"Error queuing transcription for {session_id}: {e}")
-        
-        try:
-            def process_requests():
-                nonlocal session_id, session
-                try:
-                    for request in request_iterator:
-                        session_id = request.session_id
-                        
-                        if not session_id:
-                            logger.error("Received request without session_id")
-                            continue
-                        
-                        session = session_manager.get_or_create(
-                            session_id,
-                            transcription_callback=transcription_callback
-                        )
-                        
-                        if request.audio_chunk:
-                            session.feed_audio(request.audio_chunk)
-                        if request.end_of_stream:
-                            logger.info(f"End of stream received for {session_id}")
-                            if session:
-                                final_transcription = session.finalize_transcription()
-                                if final_transcription:
-                                    transcription_callback(final_transcription)
-                            break
-                    logger.debug(f"Request stream ended for {session_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing requests for {session_id}: {e}", exc_info=True)
-                finally:
-                    stream_active.clear()
-                    transcription_queue.put(None)
-            
-            request_thread = threading.Thread(
-                target=process_requests,
-                daemon=True,
-                name=f"RequestProcessor-{session_id or 'unknown'}"
-            )
-            request_thread.start()
-            
-            while True:
-                try:
-                    try:
-                        transcription = transcription_queue.get(timeout=1.0)
-                    except Empty:
-                        if not request_thread.is_alive():
-                            if session:
-                                final_transcription = session.finalize_transcription()
-                                if final_transcription:
-                                    yield speech_pb2.TranscribeResponse(
-                                        transcription=final_transcription,
-                                        success=True
-                                    )
-                            break
-                        continue
-                    
-                    if transcription is None:
+        session_id = None
+
+        # Queue carries ONLY completed utterances (strings)
+        utterance_queue: Queue[str | None] = Queue()
+
+        def transcription_callback(text: str):
+            """
+            Called by SpeechSession ONLY when an utterance is complete
+            (post-VAD silence).
+            """
+            if context.is_active():
+                utterance_queue.put(text)
+
+        # ----------------------------------------
+        # Audio ingestion thread (producer)
+        # ----------------------------------------
+        def audio_reader():
+            nonlocal session, session_id
+            try:
+                for request in request_iterator:
+                    if not context.is_active():
                         break
-                    
-                    yield speech_pb2.TranscribeResponse(
-                        transcription=transcription,
-                        success=True
-                    )
-                    
-                except Exception as e:
-                    logger.error(f"Error sending transcription for {session_id}: {e}")
-                    yield speech_pb2.TranscribeResponse(
-                        success=False,
-                        error=str(e)
-                    )
+
+                    if not request.session_id:
+                        logger.warning("Request missing session_id")
+                        continue
+
+                    if session is None:
+                        session_id = request.session_id
+                        session = session_manager.get_or_create(
+                            session_id=session_id,
+                            transcription_callback=transcription_callback,
+                        )
+                        logger.info(f"Session started: {session_id}")
+
+                    if request.audio_chunk:
+                        session.feed_audio(request.audio_chunk)
+
+                    if request.end_of_stream:
+                        logger.info(f"End of stream received: {session_id}")
+                        break
+
+            except Exception as e:
+                logger.error(
+                    f"Audio reader error for {session_id}: {e}",
+                    exc_info=True,
+                )
+            finally:
+                # Signal completion to response loop
+                utterance_queue.put(None)
+
+        reader_thread = threading.Thread(
+            target=audio_reader,
+            daemon=True,
+            name=f"AudioReader-{id(self)}",
+        )
+        reader_thread.start()
+
+        # ----------------------------------------
+        # Response loop (consumer)
+        # ----------------------------------------
+        try:
+            while context.is_active():
+                item = utterance_queue.get()
+
+                if item is None:
                     break
-            
-            request_thread.join(timeout=2.0)
-            
+
+                # Emit exactly ONE utterance per response
+                yield speech_pb2.TranscribeResponse(
+                    transcription=item,
+                    success=True,
+                )
+
+            # ----------------------------------------
+            # Final flush (single, safe)
+            # ----------------------------------------
+            if session:
+                final_text = session.finalize_transcription()
+                if final_text:
+                    yield speech_pb2.TranscribeResponse(
+                        transcription=final_text,
+                        success=True,
+                    )
+
         except Exception as e:
-            logger.error(f"StreamTranscribe error for {session_id}: {e}", exc_info=True)
+            logger.error(
+                f"StreamTranscribe error for {session_id}: {e}",
+                exc_info=True,
+            )
             yield speech_pb2.TranscribeResponse(
                 success=False,
-                error=str(e)
+                error=str(e),
             )
+
         finally:
-            stream_active.clear()
-            logger.debug(f"StreamTranscribe completed for {session_id}")
-    
+            if session_id:
+                session_manager.cleanup(session_id)
+                logger.info(f"Session cleaned up: {session_id}")
+
+            logger.debug(f"StreamTranscribe completed: {session_id}")
+
     def CleanupSession(self, request, context):
-        session_id = request.session_id
-        
-        if not session_id:
+        if not request.session_id:
             return speech_pb2.CleanupResponse(success=False)
-        
-        success = session_manager.cleanup(session_id)
-        logger.info(f"Session cleanup {'successful' if success else 'failed'}: {session_id}")
-        
+
+        success = session_manager.cleanup(request.session_id)
+        logger.info(
+            f"Manual cleanup {'successful' if success else 'failed'}: "
+            f"{request.session_id}"
+        )
+
         return speech_pb2.CleanupResponse(success=success)
 
 
 def serve():
     if speech_pb2_grpc is None:
-        logger.error("Proto files not generated. Run: python -m grpc_tools.protoc ...")
+        logger.error("Proto files not generated")
         sys.exit(1)
-    
+
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=config.server.max_workers)
+        futures.ThreadPoolExecutor(
+            max_workers=config.server.max_workers
+        )
     )
-    
+
     speech_pb2_grpc.add_SpeechServiceServicer_to_server(
-        SpeechServicer(), server
+        SpeechServicer(),
+        server,
     )
-    
+
     address = f"{config.server.host}:{config.server.port}"
     server.add_insecure_port(address)
-    
+
     def shutdown_handler(signum, frame):
-        logger.info("Received shutdown signal, cleaning up...")
-        session_manager.cleanup_all()
+        logger.info("Shutdown signal received")
         server.stop(grace=5)
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
-    
+
     server.start()
     logger.info(f"Speech Service (STT) started on {address}")
-    logger.info(f"STT Model: {config.stt.model}")
-    logger.info(f"VAD Sensitivity: {config.stt.silero_sensitivity}")
-    logger.info(f"Silence Duration: {config.stt.post_speech_silence_duration}s")
-    
+    logger.info("Mode: Utterance-level (LLM-safe)")
+
     server.wait_for_termination()
 
 

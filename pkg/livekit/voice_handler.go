@@ -53,9 +53,7 @@ func NewVoiceHandler(cfg VoiceHandlerConfig) (*VoiceHandler, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	
-	
-	
+
 	handler := &VoiceHandler{
 		sessionID:     cfg.SessionID,
 		boardID:       cfg.BoardID,
@@ -64,7 +62,7 @@ func NewVoiceHandler(cfg VoiceHandlerConfig) (*VoiceHandler, error) {
 		llmClient:     cfg.LLMClient,
 		ctx:           ctx,
 		cancel:        cancel,
-		isMuted:       true, 
+		isMuted:       true,
 		onTranscribe:  cfg.OnTranscribe,
 		onLLMResponse: cfg.OnLLMResponse,
 		getBoardState: cfg.GetBoardState,
@@ -183,7 +181,7 @@ func (h *VoiceHandler) handleLLMResponse(transcription string) {
 		}
 	}
 
-	fmt.Println("Board state", boardStateJSON)
+	fmt.Println("Transcription", transcription)
 
 	response, err := h.llmClient.GenerateResponse(context.Background(), transcription, boardStateJSON)
 	if err != nil {
@@ -198,7 +196,6 @@ func (h *VoiceHandler) handleLLMResponse(transcription string) {
 	}
 }
 
-
 func pcm16ToBytes(sample media.PCM16Sample) []byte {
 	bytes := make([]byte, len(sample)*2)
 	for i, s := range sample {
@@ -207,4 +204,3 @@ func pcm16ToBytes(sample media.PCM16Sample) []byte {
 	}
 	return bytes
 }
-

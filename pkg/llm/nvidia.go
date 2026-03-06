@@ -71,6 +71,7 @@ func (c *NvidiaLLMClient) worker() {
 }
 
 func (c *NvidiaLLMClient) GenerateResponse(ctx context.Context, prompt string, boardState string) (*LLMResponse, error) {
+	fmt.Println("Nvidia Generating response for prompt", prompt, "and board state", boardState)
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("empty text provided")
 	}

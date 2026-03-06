@@ -11,7 +11,6 @@ import (
 	"draw/internal/service"
 	"draw/pkg/config"
 	"draw/pkg/database"
-	"draw/pkg/inngest"
 	"draw/pkg/logger"
 
 	"github.com/google/uuid"
@@ -22,7 +21,6 @@ type App struct {
 	Config  *config.AppConfig
 	DB      database.DB
 	Service *service.Service
-	Inngest *inngest.Inngest
 	Log     *logger.Logger
 }
 
@@ -40,11 +38,8 @@ func NewApp(ctx context.Context, cfg *config.AppConfig) (*App, error) {
 	}
 
 	queries := repo.New(dbInstance)
-	inngest, err := inngest.NewInngest(&cfg.AWS, &cfg.Gemini, queries)
-	if err != nil {
-		return nil, err
-	}
-	services := service.NewService(dbInstance, queries, inngest, cfg)
+
+	services := service.NewService(dbInstance, queries, cfg)
 
 	traceIDFn := func(ctx context.Context) string {
 		return uuid.New().String()
@@ -58,12 +53,10 @@ func NewApp(ctx context.Context, cfg *config.AppConfig) (*App, error) {
 	}
 	log := logger.NewLogger(logConfig)
 
-
 	return &App{
 		Config:  cfg,
 		DB:      db,
 		Service: services,
-		Inngest: inngest,
 		Log:     log,
 	}, nil
 }
